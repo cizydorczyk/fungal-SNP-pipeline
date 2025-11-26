@@ -1,0 +1,44 @@
+# Configuration file for Candida/Pichia analysis pipeline
+
+# Software paths
+picard_jar: "/home/user/software/picard.jar"
+
+# Input data
+sample_list: "/home/user/candida-2025/ckrusei-list.txt" # 1 sample/isolate per line
+fastq_dir: "/home/user/candida-2025/ckrusei-trimmed-fastq" # Directory with trimmed fastq
+fastq_ending: "_t_"  # set to "_t_R" if Rs included, e.g. _R1.fastq.gz
+
+# Reference genome
+reference:
+  fasta: "/home/user/candida-2025/Pichia_kudriavzevii_CBS573_ncbi_dataset/data/GCF_003054445.1/GCF_003054445.1_ASM305444v1_genomic.fna" # Reference genome for alignment/SNP calling
+  prefix: "CkCBS573" # Prefix used to name reference after processing
+  output_dir: "reference" # Directory where processed reference will live; do not change!
+
+# Resource allocation
+resources:
+  # Total cores available to Snakemake
+  total_cores: 32
+  
+  # Per-rule thread allocation
+  threads:
+    nucmer: 4
+    bwa_index: 4
+    bwa_align: 4
+    samtools_sort: 4
+    picard_rg: 4
+    default: 1
+  
+  # Memory limits (MB)
+  memory:
+    nucmer: 8000
+    bwa_index: 16000
+    bwa_align: 8000
+    picard: 16000
+    picard_markdup: 4000
+    picard_cleansam: 4000
+    picard_fixmate: 4000
+    picard_rg: 4000
+    maskfasta: 4000
+    samtools: 2000
+    samtools_sort: 4000
+    default: 1000

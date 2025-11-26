@@ -1,0 +1,252 @@
+import os
+
+configfile: "config.yaml"
+
+BAMDIR = config["bam_dir"]
+ISOLATE_LIST = config["isolate_list"]
+NQUIRE = config["nquire_dir"]
+THREADS = config.get("threads", 1)
+BED_FILE = config.get("bed_file", "")
+
+# Output directories
+BIN_WG_DIR = "nquire-bin/whole-genome"
+BIN_REGION_DIR = "nquire-bin/region"
+DENOISED_WG_DIR = "nquire-bin/whole-genome-denoised"
+DENOISED_REGION_DIR = "nquire-bin/region-denoised"
+HIST_WG_DIR = "nquire-histo/whole-genome"
+HIST_REGION_DIR = "nquire-histo/region"
+LRD_WG_DIR = "nquire-lrd/whole-genome"
+LRD_REGION_DIR = "nquire-lrd/region"
+LOG_DIR = "logs"
+
+# Create directories if they don't exist
+for d in [BIN_WG_DIR, BIN_REGION_DIR, DENOISED_WG_DIR, DENOISED_REGION_DIR, HIST_WG_DIR, HIST_REGION_DIR, LRD_WG_DIR, LRD_REGION_DIR, LOG_DIR]:
+    os.makedirs(d, exist_ok=True)
+
+# Read sample list
+with open(ISOLATE_LIST) as f:
+    SAMPLES = [line.strip() for line in f if line.strip()]
+
+# Read BED regions if BED_FILE is provided
+REGIONS = []
+if BED_FILE and os.path.exists(BED_FILE):
+    with open(BED_FILE) as f:
+        for line in f:
+            if line.startswith("#") or line.strip() == "":
+                continue
+            fields = line.strip().split("\t")
+            if len(fields) >= 4:
+                # Use the region name from 4th column of BED file
+                region_name = fields[3]
+                REGIONS.append(region_name)
+            elif len(fields) >= 3:
+                # If no name column, create one from coordinates
+                region_name = f"{fields[0]}_{fields[1]}_{fields[2]}"
+                REGIONS.append(region_name)
+
+# --------------------------------------
+# Rule all
+# --------------------------------------
+rule all:
+    input:
+        # Whole-genome
+        expand(os.path.join(HIST_WG_DIR, "{sample}.hist.txt"), sample=SAMPLES),
+        expand(os.path.join(LRD_WG_DIR, "{sample}.nQuire-output.txt"), sample=SAMPLES),
+        "nQuire_combined.tsv",
+        # Per-region
+        expand(os.path.join(HIST_REGION_DIR, "{sample}-{region}.hist.txt"), sample=SAMPLES, region=REGIONS) if REGIONS else [],
+        expand(os.path.join(LRD_REGION_DIR, "{sample}-{region}.nQuire-output.txt"), sample=SAMPLES, region=REGIONS) if REGIONS else [],
+        "nQuire_combined_regions.tsv" if REGIONS else []
+
+# --------------------------------------
+# Whole-genome rules
+# --------------------------------------
+rule nquire_create:
+    input:
+        bam=lambda wc: os.path.join(BAMDIR, f"{wc.sample}-RG.bam")
+    output:
+        bin=os.path.join(BIN_WG_DIR, "{sample}.bin")
+    params:
+        outbase=lambda wc: os.path.join(BIN_WG_DIR, wc.sample)
+    log:
+        os.path.join(LOG_DIR, "{sample}_create.log")
+    shell:
+        """
+        {NQUIRE}/nQuire create -f 0.15 -b {input.bam} -o {params.outbase} > {log} 2>&1
+        """
+
+rule nquire_denoise:
+    input:
+        bin=os.path.join(BIN_WG_DIR, "{sample}.bin")
+    output:
+        denoised=os.path.join(DENOISED_WG_DIR, "{sample}_denoised.bin")
+    params:
+        outbase=lambda wc: os.path.join(DENOISED_WG_DIR, f"{wc.sample}_denoised")
+    log:
+        os.path.join(LOG_DIR, "{sample}_denoise.log")
+    shell:
+        """
+        {NQUIRE}/nQuire denoise {input.bin} -o {params.outbase} > {log} 2>&1
+        """
+
+rule nquire_histo:
+    input:
+        bin=os.path.join(DENOISED_WG_DIR, "{sample}_denoised.bin")
+    output:
+        hist=os.path.join(HIST_WG_DIR, "{sample}.hist.txt")
+    log:
+        os.path.join(LOG_DIR, "{sample}_histo.log")
+    shell:
+        """
+        {NQUIRE}/nQuire histo {input.bin} > {output.hist} 2> {log}
+        """
+
+rule nquire_lrdmodel:
+    input:
+        bin=os.path.join(DENOISED_WG_DIR, "{sample}_denoised.bin")
+    output:
+        lrd=os.path.join(LRD_WG_DIR, "{sample}.nQuire-output.txt")
+    log:
+        os.path.join(LOG_DIR, "{sample}_lrd.log")
+    shell:
+        """
+        {NQUIRE}/nQuire lrdmodel {input.bin} > {output.lrd} 2> {log}
+        """
+
+# Combine whole-genome lrdmodel outputs
+rule combine_lrdmodel:
+    input:
+        expand(os.path.join(LRD_WG_DIR, "{sample}.nQuire-output.txt"), sample=SAMPLES)
+    output:
+        combined="nQuire_combined.tsv"
+    log:
+        os.path.join(LOG_DIR, "combine_lrdmodel.log")
+    run:
+        with open(output.combined, "w") as outfile:
+            header_written = False
+            for infile_path in input:
+                with open(infile_path) as infile:
+                    lines = infile.readlines()
+                    if not lines:
+                        continue
+                    if not header_written:
+                        outfile.write("sample\t" + lines[0])
+                        header_written = True
+                    if len(lines) > 1:
+                        sample_name = os.path.basename(infile_path).replace(".nQuire-output.txt","")
+                        outfile.write(sample_name + "\t" + lines[1])
+        with open(log[0], "w") as logf:
+            logf.write(f"Combined {len(input)} lrdmodel files into {output.combined}\n")
+
+# --------------------------------------
+# Per-region rules (if BED_FILE is provided)
+# --------------------------------------
+if REGIONS:
+
+    # Create individual BED files for each region
+    rule create_region_bed:
+        input:
+            bed=BED_FILE
+        output:
+            region_bed=temp(os.path.join(BIN_REGION_DIR, "{region}.bed"))
+        params:
+            region_name="{region}"
+        run:
+            with open(output.region_bed, "w") as out:
+                with open(input.bed) as f:
+                    for line in f:
+                        if line.startswith("#") or line.strip() == "":
+                            continue
+                        fields = line.strip().split("\t")
+                        # Match by region name (4th column) or by coordinate-based name
+                        if len(fields) >= 4 and fields[3] == params.region_name:
+                            out.write(line)
+                            break
+                        elif len(fields) >= 3:
+                            coord_name = f"{fields[0]}_{fields[1]}_{fields[2]}"
+                            if coord_name == params.region_name:
+                                out.write(line)
+                                break
+
+    rule nquire_create_region:
+        input:
+            bam=lambda wc: os.path.join(BAMDIR, f"{wc.sample}-RG.bam"),
+            region_bed=os.path.join(BIN_REGION_DIR, "{region}.bed")
+        output:
+            bin=os.path.join(BIN_REGION_DIR, "{sample}-{region}.bin")
+        params:
+            outbase=lambda wc: os.path.join(BIN_REGION_DIR, wc.sample)
+        log:
+            os.path.join(LOG_DIR, "{sample}-{region}_create_region.log")
+        shell:
+            """
+            {NQUIRE}/nQuire create -f 0.15 -b {input.bam} -r {input.region_bed} -o {params.outbase} > {log} 2>&1
+            """
+
+    rule nquire_denoise_region:
+        input:
+            bin=os.path.join(BIN_REGION_DIR, "{sample}-{region}.bin")
+        output:
+            denoised=os.path.join(DENOISED_REGION_DIR, "{sample}-{region}_denoised.bin")
+        params:
+            outbase=lambda wc: os.path.join(DENOISED_REGION_DIR, f"{wc.sample}-{wc.region}_denoised")
+        log:
+            os.path.join(LOG_DIR, "{sample}-{region}_denoise_region.log")
+        shell:
+            """
+            {NQUIRE}/nQuire denoise {input.bin} -o {params.outbase} > {log} 2>&1
+            """
+
+    rule nquire_histo_region:
+        input:
+            bin=os.path.join(DENOISED_REGION_DIR, "{sample}-{region}_denoised.bin")
+        output:
+            hist=os.path.join(HIST_REGION_DIR, "{sample}-{region}.hist.txt")
+        log:
+            os.path.join(LOG_DIR, "{sample}-{region}_histo_region.log")
+        shell:
+            """
+            {NQUIRE}/nQuire histo {input.bin} > {output.hist} 2> {log}
+            """
+
+    rule nquire_lrdmodel_region:
+        input:
+            bin=os.path.join(DENOISED_REGION_DIR, "{sample}-{region}_denoised.bin")
+        output:
+            lrd=os.path.join(LRD_REGION_DIR, "{sample}-{region}.nQuire-output.txt")
+        log:
+            os.path.join(LOG_DIR, "{sample}-{region}_lrd_region.log")
+        shell:
+            """
+            {NQUIRE}/nQuire lrdmodel {input.bin} > {output.lrd} 2> {log}
+            """
+
+# Combine per-region lrdmodel outputs
+if REGIONS:
+    rule combine_lrdmodel_regions:
+        input:
+            expand(os.path.join(LRD_REGION_DIR, "{sample}-{region}.nQuire-output.txt"), sample=SAMPLES, region=REGIONS)
+        output:
+            combined="nQuire_combined_regions.tsv"
+        log:
+            os.path.join(LOG_DIR, "combine_lrdmodel_regions.log")
+        run:
+            with open(output.combined, "w") as outfile:
+                header_written = False
+                for infile_path in input:
+                    with open(infile_path) as infile:
+                        lines = infile.readlines()
+                        if not lines:
+                            continue
+                        if not header_written:
+                            outfile.write("sample\tregion\t" + lines[0])
+                            header_written = True
+                        if len(lines) > 1:
+                            # Parse sample and region from filename: sample-region.nQuire-output.txt
+                            basename = os.path.basename(infile_path).replace(".nQuire-output.txt","")
+                            parts = basename.split("-", 1)  # Split only on first dash
+                            sample_name = parts[0] if len(parts) > 0 else basename
+                            region_name = parts[1] if len(parts) > 1 else "unknown"
+                            outfile.write(f"{sample_name}\t{region_name}\t" + lines[1])
+            with open(log[0], "w") as logf:
+                logf.write(f"Combined {len(input)} region lrdmodel files into {output.combined}\n")

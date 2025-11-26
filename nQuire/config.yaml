@@ -1,0 +1,14 @@
+# Directory containing sorted, indexed BAM files
+bam_dir: "/home/user/candida-2025/bam-alignments/"
+
+# List of isolate/sample IDs (one per line, e.g., 30110)
+isolate_list: "/home/user/candida-2025/ckrusei-list.txt"
+
+# Path to nQuire directory
+nquire_dir: "/home/user/software/nQuire/"
+
+# Number of threads for multithreaded steps
+threads: 4
+
+# Optional BED file for per-region analysis (leave empty to skip)
+bed_file: "/home/user/candida-2025/CkCBS573.bed"

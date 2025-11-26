@@ -1,0 +1,348 @@
+# Snakemake workflow for GATK HaplotypeCaller variant calling
+# Run with: snakemake --cores 16 --configfile config.yaml
+
+import os
+
+# Load configuration
+configfile: "config.yaml"
+
+# Configuration variables
+REF = config["reference"]
+ISOLATELIST = config["isolate_list"]
+BAMDIR = config["bam_dir"]
+PLOIDYFILE = config["ploidy_file"]
+
+# Resource configuration with defaults
+THREADS_HC = config.get("resources", {}).get("threads", {}).get("haplotypecaller", 4)
+MEM_HC = config.get("resources", {}).get("memory", {}).get("haplotypecaller", 8000)
+THREADS_COMBINE = config.get("resources", {}).get("threads", {}).get("combine_gvcfs", 4)
+MEM_COMBINE = config.get("resources", {}).get("memory", {}).get("combine_gvcfs", 16000)
+THREADS_GENOTYPE = config.get("resources", {}).get("threads", {}).get("genotype_gvcfs", 4)
+MEM_GENOTYPE = config.get("resources", {}).get("memory", {}).get("genotype_gvcfs", 16000)
+THREADS_FILTER = config.get("resources", {}).get("threads", {}).get("variant_filtration", 4)
+MEM_FILTER = config.get("resources", {}).get("memory", {}).get("variant_filtration", 8000)
+THREADS_SELECT = config.get("resources", {}).get("threads", {}).get("select_variants", 4)
+MEM_SELECT = config.get("resources", {}).get("memory", {}).get("select_variants", 8000)
+THREADS_FILTERGT = config.get("resources", {}).get("threads", {}).get("filter_gatk_genotypes", 1)
+MEM_FILTERGT = config.get("resources", {}).get("memory", {}).get("filter_gatk_genotypes", 4000)
+THREADS_VCF2FASTA = config.get("resources", {}).get("threads", {}).get("vcf_to_fasta", 1)
+MEM_VCF2FASTA = config.get("resources", {}).get("memory", {}).get("vcf_to_fasta", 4000)
+THREADS_SNPDIST = config.get("resources", {}).get("threads", {}).get("snp_distances", 1)
+MEM_SNPDIST = config.get("resources", {}).get("memory", {}).get("snp_distances", 4000)
+
+# Variant filtration arguments
+FILTER_ARGS = config.get("variant_filtration", {}).get("args", "")
+SELECT_ARGS = config.get("select_variants", {}).get("args", "")
+FILTERGT_ARGS = config.get("filter_gatk_genotypes", {}).get("args", "")
+VCF2FASTA_ARGS = config.get("vcf_to_fasta", {}).get("args", "")
+
+# Script paths
+FILTERGT_SCRIPT = config.get("filter_gatk_genotypes", {}).get("script", "")
+VCFTOOLS_SCRIPT = config.get("filter_gatk_genotypes", {}).get("vcftools_script", "")
+VCF2FASTA_SCRIPT = config.get("vcf_to_fasta", {}).get("script", "")
+VCF2FASTA_VCFTOOLS = config.get("vcf_to_fasta", {}).get("vcftools_script", "")
+SNPDIST_SCRIPT = config.get("snp_distances", {}).get("script", "")
+
+# Read isolate list
+with open(ISOLATELIST, 'r') as f:
+    ISOLATES = [line.strip() for line in f if line.strip()]
+
+# Read ploidy file and create dictionary
+SAMPLE_PLOIDY = {}
+with open(PLOIDYFILE, 'r') as f:
+    for line in f:
+        if line.strip():
+            isolate, ploidy = line.strip().split('\t')
+            SAMPLE_PLOIDY[isolate] = ploidy
+
+# Rule to run everything
+rule all:
+    input:
+        expand("gvcfs/{isolate}.g.vcf.gz", isolate=ISOLATES),
+        expand("gvcfs/{isolate}.g.vcf.gz.tbi", isolate=ISOLATES),
+        "combined/combined.g.vcf.gz",
+        "combined/combined.g.vcf.gz.tbi",
+        "vcfs/final.vcf.gz",
+        "vcfs/final.vcf.gz.tbi",
+        "vcfs/final.filtered.vcf.gz",
+        "vcfs/final.filtered.vcf.gz.tbi",
+        "vcfs/final.filtered.snps.vcf.gz",
+        "vcfs/final.filtered.snps.vcf.gz.tbi",
+        "vcfs/final.filtered.snps.gt-filtered.vcf.gz",
+        "fasta/snp_alignment.fasta",
+        "fasta/snp_distances_SIMPLE.tsv",
+        "fasta/snp_distances_EVOLUTIONARY.tsv"
+
+# Rule to run only HaplotypeCaller
+rule run_haplotypecaller:
+    input:
+        expand("gvcfs/{isolate}.g.vcf.gz", isolate=ISOLATES),
+        expand("gvcfs/{isolate}.g.vcf.gz.tbi", isolate=ISOLATES)
+
+# Rule to run only CombineGVCFs
+rule run_combine_gvcfs:
+    input:
+        "combined/combined.g.vcf.gz",
+        "combined/combined.g.vcf.gz.tbi"
+
+# Rule to run only GenotypeGVCFs
+rule run_genotype_gvcfs:
+    input:
+        "vcfs/final.vcf.gz",
+        "vcfs/final.vcf.gz.tbi"
+
+# Rule to run only VariantFiltration
+rule run_variant_filtration:
+    input:
+        "vcfs/final.filtered.vcf.gz",
+        "vcfs/final.filtered.vcf.gz.tbi"
+
+# Rule to run only SelectVariants
+rule run_select_variants:
+    input:
+        "vcfs/final.filtered.snps.vcf.gz",
+        "vcfs/final.filtered.snps.vcf.gz.tbi"
+
+# Rule to run only FilterGatkGenotypes
+rule run_filter_gatk_genotypes:
+    input:
+        "vcfs/final.filtered.snps.gt-filtered.vcf.gz"
+
+# Rule to run only VCF to FASTA conversion
+rule run_vcf_to_fasta:
+    input:
+        "fasta/snp_alignment.fasta"
+
+# Rule to run only SNP distance calculation
+rule run_snp_distances:
+    input:
+        "fasta/snp_distances_SIMPLE.tsv",
+        "fasta/snp_distances_EVOLUTIONARY.tsv"
+
+# Rule to run GATK HaplotypeCaller on each isolate
+rule haplotypecaller:
+    input:
+        bam = lambda wildcards: f"{BAMDIR}/{wildcards.isolate}-RG.bam",
+        bai = lambda wildcards: f"{BAMDIR}/{wildcards.isolate}-RG.bam.bai",
+        ref = REF,
+        ref_idx = f"{REF}.fai",
+        ref_dict = REF.replace(".fa", ".dict").replace(".fasta", ".dict")
+    output:
+        gvcf = "gvcfs/{isolate}.g.vcf.gz",
+        idx = "gvcfs/{isolate}.g.vcf.gz.tbi"
+    params:
+        sample_ploidy = lambda wildcards: SAMPLE_PLOIDY[wildcards.isolate]
+    threads: THREADS_HC
+    resources:
+        mem_mb = MEM_HC
+    log:
+        "logs/haplotypecaller/{isolate}.log"
+    shell:
+        """
+        mkdir -p gvcfs logs/haplotypecaller
+        gatk HaplotypeCaller \
+            -R {input.ref} \
+            -I {input.bam} \
+            -O {output.gvcf} \
+            --sample-ploidy {params.sample_ploidy} \
+            -ERC GVCF \
+            --native-pair-hmm-threads {threads} \
+            --java-options "-Xmx{resources.mem_mb}m -Xms{resources.mem_mb}m -XX:ParallelGCThreads={threads}" \
+            > {log} 2>&1
+        """
+
+# Rule to combine all GVCFs into a single multi-sample GVCF
+rule combine_gvcfs:
+    input:
+        gvcfs = expand("gvcfs/{isolate}.g.vcf.gz", isolate=ISOLATES),
+        indices = expand("gvcfs/{isolate}.g.vcf.gz.tbi", isolate=ISOLATES),
+        ref = REF,
+        ref_idx = f"{REF}.fai",
+        ref_dict = REF.replace(".fa", ".dict").replace(".fasta", ".dict")
+    output:
+        combined = "combined/combined.g.vcf.gz",
+        idx = "combined/combined.g.vcf.gz.tbi"
+    params:
+        variant_flags = lambda wildcards, input: " ".join([f"-V {gvcf}" for gvcf in input.gvcfs])
+    threads: THREADS_COMBINE
+    resources:
+        mem_mb = MEM_COMBINE
+    log:
+        "logs/combine_gvcfs/combined.log"
+    shell:
+        """
+        mkdir -p combined logs/combine_gvcfs
+        gatk CombineGVCFs \
+            -R {input.ref} \
+            {params.variant_flags} \
+            -O {output.combined} \
+            --java-options "-Xmx{resources.mem_mb}m" \
+            > {log} 2>&1
+        """
+
+# Rule to perform joint genotyping on combined GVCF
+rule genotype_gvcfs:
+    input:
+        gvcf = "combined/combined.g.vcf.gz",
+        idx = "combined/combined.g.vcf.gz.tbi",
+        ref = REF,
+        ref_idx = f"{REF}.fai",
+        ref_dict = REF.replace(".fa", ".dict").replace(".fasta", ".dict")
+    output:
+        vcf = "vcfs/final.vcf.gz",
+        idx = "vcfs/final.vcf.gz.tbi"
+    threads: THREADS_GENOTYPE
+    resources:
+        mem_mb = MEM_GENOTYPE
+    log:
+        "logs/genotype_gvcfs/final.log"
+    shell:
+        """
+        mkdir -p vcfs logs/genotype_gvcfs
+        gatk GenotypeGVCFs \
+            -R {input.ref} \
+            -V {input.gvcf} \
+            -O {output.vcf} \
+            --java-options "-Xmx{resources.mem_mb}m" \
+            > {log} 2>&1
+        """
+
+# Rule to filter variants with GATK VariantFiltration
+rule variant_filtration:
+    input:
+        vcf = "vcfs/final.vcf.gz",
+        idx = "vcfs/final.vcf.gz.tbi",
+        ref = REF,
+        ref_idx = f"{REF}.fai",
+        ref_dict = REF.replace(".fa", ".dict").replace(".fasta", ".dict")
+    output:
+        vcf = "vcfs/final.filtered.vcf.gz",
+        idx = "vcfs/final.filtered.vcf.gz.tbi"
+    params:
+        args = FILTER_ARGS
+    threads: THREADS_FILTER
+    resources:
+        mem_mb = MEM_FILTER
+    log:
+        "logs/variant_filtration/final.log"
+    shell:
+        """
+        mkdir -p logs/variant_filtration
+        gatk VariantFiltration \
+            -R {input.ref} \
+            -V {input.vcf} \
+            -O {output.vcf} \
+            {params.args} \
+            --java-options "-Xmx{resources.mem_mb}m" \
+            > {log} 2>&1
+        """
+
+# Rule to select SNPs only with GATK SelectVariants
+rule select_variants:
+    input:
+        vcf = "vcfs/final.filtered.vcf.gz",
+        idx = "vcfs/final.filtered.vcf.gz.tbi"
+    output:
+        vcf = "vcfs/final.filtered.snps.vcf.gz",
+        idx = "vcfs/final.filtered.snps.vcf.gz.tbi"
+    params:
+        args = SELECT_ARGS
+    threads: THREADS_SELECT
+    resources:
+        mem_mb = MEM_SELECT
+    log:
+        "logs/select_variants/final.log"
+    shell:
+        """
+        mkdir -p logs/select_variants
+        gatk SelectVariants \
+            -V {input.vcf} \
+            -O {output.vcf} \
+            {params.args} \
+            --java-options "-Xmx{resources.mem_mb}m" \
+            > {log} 2>&1
+        """
+
+# Rule to filter GATK genotypes using custom script
+rule filter_gatk_genotypes:
+    input:
+        vcf = "vcfs/final.filtered.snps.vcf.gz"
+    output:
+        vcf = "vcfs/final.filtered.snps.gt-filtered.vcf.gz"
+    params:
+        args = FILTERGT_ARGS,
+        script = FILTERGT_SCRIPT,
+        vcftools = VCFTOOLS_SCRIPT
+    threads: THREADS_FILTERGT
+    resources:
+        mem_mb = MEM_FILTERGT
+    log:
+        "logs/filter_gatk_genotypes/final.log"
+    shell:
+        """
+        mkdir -p logs/filter_gatk_genotypes
+        
+        # Set PYTHONPATH to include vcfTools.py directory
+        # export PYTHONPATH=$(dirname {params.vcftools}):$PYTHONPATH
+        
+        # Decompress input VCF
+        gunzip -c {input.vcf} > vcfs/final.filtered.snps.vcf
+        
+        # Run filterGatkGenotypes.py
+        python {params.script} vcfs/final.filtered.snps.vcf {params.args} > vcfs/final.filtered.snps.gt-filtered.vcf 2> {log}
+        
+        # Compress output
+        gzip vcfs/final.filtered.snps.gt-filtered.vcf
+        
+        # Clean up decompressed input
+        rm vcfs/final.filtered.snps.vcf
+        """
+
+# Rule to convert VCF to FASTA alignment
+rule vcf_to_fasta:
+    input:
+        vcf = "vcfs/final.filtered.snps.gt-filtered.vcf.gz"
+    output:
+        fasta = "fasta/snp_alignment.fasta"
+    params:
+        args = VCF2FASTA_ARGS,
+        script = VCF2FASTA_SCRIPT,
+        vcftools = VCF2FASTA_VCFTOOLS
+    threads: THREADS_VCF2FASTA
+    resources:
+        mem_mb = MEM_VCF2FASTA
+    log:
+        "logs/vcf_to_fasta/snp_alignment.log"
+    shell:
+        """
+        mkdir -p fasta logs/vcf_to_fasta
+        
+        # Set PYTHONPATH to include vcfTools2.py directory
+        # export PYTHONPATH=$(dirname {params.vcftools}):$PYTHONPATH
+        
+        # Run vcf to fasta script
+        python {params.script} {input.vcf} {output.fasta} {params.args} > {log} 2>&1
+        """
+
+# Rule to calculate pairwise SNP distances from FASTA alignment
+rule snp_distances:
+    input:
+        fasta = "fasta/snp_alignment.fasta"
+    output:
+        tsv = "fasta/snp_distances_SIMPLE.tsv",
+        tsv2 = "fasta/snp_distances_EVOLUTIONARY.tsv"
+        
+    params:
+        script = SNPDIST_SCRIPT
+    threads: THREADS_SNPDIST
+    resources:
+        mem_mb = MEM_SNPDIST
+    log:
+        "logs/snp_distances/snp_distances.log"
+    shell:
+        """
+        mkdir -p logs/snp_distances
+        
+        # Run SNP distance calculation script
+        python {params.script} {input.fasta} --outfile_simple {output.tsv} --outfile_evolutionary  {output.tsv2} > {log} 2>&1
+        """
