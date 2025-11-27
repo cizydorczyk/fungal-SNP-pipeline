@@ -323,42 +323,91 @@ class VcfRecord:
 	# 		pass
 	# 	return percent_AD
 
+	# def get_percent_AD2(self, index=0):
+	# 	"""
+	# 	Returns the minimum allele frequency across all alleles present.
+	# 	For diploids (0/1): returns alt/(ref+alt)
+	# 	For triploids (0/1/2): returns min_allele/(ref+alt1+alt2)
+	# 	"""
+	# 	percent_AD = 'Undefined'
+	# 	fields = self.genotypes[index]
+	# 	gt_fields = fields.split(':')
+		
+	# 	try:
+	# 		ad_index = self.get_AD_index()
+	# 		ad = gt_fields[ad_index]
+	# 		split_ad = ad.split(',')
+			
+	# 		# Convert to integers and filter out zeros
+	# 		ad_counts = [int(x) for x in split_ad]
+	# 		total_depth = sum(ad_counts)
+			
+	# 		if total_depth > 0:
+	# 			# Get non-zero allele depths
+	# 			non_zero_depths = [x for x in ad_counts if x > 0]
+				
+	# 			if len(non_zero_depths) > 0:
+	# 				# Return the minimum allele frequency
+	# 				min_depth = min(non_zero_depths)
+	# 				percent_AD = float(min_depth) / float(total_depth)
+	# 			else:
+	# 				percent_AD = 0.0
+	# 		else:
+	# 			percent_AD = 0.0
+	# 	except:
+	# 		pass
+		
+	# 	return percent_AD
+	
 	def get_percent_AD2(self, index=0):
 		"""
-		Returns the minimum allele frequency across all alleles present.
-		For diploids (0/1): returns alt/(ref+alt)
-		For triploids (0/1/2): returns min_allele/(ref+alt1+alt2)
+		Returns allele frequency for filtering.
+		For haploids: uses MycoSNP logic (alt/(ref+alt) or 1.0 for pure alt)
+		For diploids/triploids: returns min_allele/(total_depth) for heterozygotes
 		"""
 		percent_AD = 'Undefined'
 		fields = self.genotypes[index]
 		gt_fields = fields.split(':')
 		
 		try:
+			# Get the genotype to detect ploidy
+			genotype = gt_fields[0]
+			split_gt = re.split(r"[/|]", genotype)
+			ploidy = len(split_gt)
+			
 			ad_index = self.get_AD_index()
 			ad = gt_fields[ad_index]
 			split_ad = ad.split(',')
 			
-			# Convert to integers and filter out zeros
-			ad_counts = [int(x) for x in split_ad]
-			total_depth = sum(ad_counts)
+			# HAPLOID: Use MycoSNP logic
+			if ploidy == 1:
+				if split_ad[0] != '0':
+					percent_AD = float(split_ad[1])/(float(split_ad[0])+float(split_ad[1]))
+				elif split_ad[1] != '0':
+					percent_AD = float(1)
 			
-			if total_depth > 0:
-				# Get non-zero allele depths
-				non_zero_depths = [x for x in ad_counts if x > 0]
+			# DIPLOID/TRIPLOID: Use minimum allele frequency logic
+			else:
+				# Convert to integers and filter out zeros
+				ad_counts = [int(x) for x in split_ad]
+				total_depth = sum(ad_counts)
 				
-				if len(non_zero_depths) > 0:
-					# Return the minimum allele frequency
-					min_depth = min(non_zero_depths)
-					percent_AD = float(min_depth) / float(total_depth)
+				if total_depth > 0:
+					# Get non-zero allele depths
+					non_zero_depths = [x for x in ad_counts if x > 0]
+					
+					if len(non_zero_depths) > 0:
+						# Return the minimum allele frequency
+						min_depth = min(non_zero_depths)
+						percent_AD = float(min_depth) / float(total_depth)
+					else:
+						percent_AD = 0.0
 				else:
 					percent_AD = 0.0
-			else:
-				percent_AD = 0.0
 		except:
 			pass
 		
 		return percent_AD
-
 
 	def get_AD_binomial_p(self,index=0): #### currently works only on biallelic sites
 		pvalue = False
