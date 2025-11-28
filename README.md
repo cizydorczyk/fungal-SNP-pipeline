@@ -8,6 +8,8 @@ There are 3 pipelines that come together for SNP calling:
 
 Each workflow has its own Snakefile and config.yaml. Workflow 1 and its Snakefile/config.yaml live in the project directory. Workflow 2 lives in the nQuire/ directory, and Workflow 3 in the snp-calling/ directory. These 2 directories must be created manually and the Snakefile and config.yaml placed into them manually.
 
+NOTE: The pipeline currently does not remove asterisks from fasta before calculating snp distances! SEQKIT_REPLACE step from MycoSNP is not yet implemented!
+
 # Workflow steps
 
 ## Workflow 1 - BAM alignments
