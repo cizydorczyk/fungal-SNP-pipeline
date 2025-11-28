@@ -155,19 +155,51 @@ def count_evolutionary_distance(base1, base2):
         # No overlap - complete replacement needed
         return max(len(bases1), len(bases2))
 
-def count_snp_differences(seq1, seq2, method='simple'):
-    """
-    Count SNP differences between two sequences.
+# def count_snp_differences(seq1, seq2, method='simple'):
+#     """
+#     Count SNP differences between two sequences.
     
-    method='simple': Any difference counts as 1
-    method='evolutionary': Minimum mutations needed
-    """
+#     method='simple': Any difference counts as 1
+#     method='evolutionary': Minimum mutations needed
+#     """
+#     if len(seq1) != len(seq2):
+#         sys.stderr.write("Warning: sequences have different lengths\n")
+#         return None
+    
+#     differences = 0
+#     compared_sites = 0
+    
+#     for i in range(len(seq1)):
+#         base1 = seq1[i].upper()
+#         base2 = seq2[i].upper()
+        
+#         # Skip if either is N or gap
+#         if base1 in ['N', '-'] or base2 in ['N', '-']:
+#             continue
+        
+#         compared_sites += 1
+        
+#         if method == 'simple':
+#             # Count as difference if bases are not identical
+#             if base1 != base2:
+#                 differences += 1
+#         elif method == 'evolutionary':
+#             # Count minimum evolutionary distance
+#             dist = count_evolutionary_distance(base1, base2)
+#             if dist is not None:
+#                 differences += dist
+    
+#     return differences
+def count_snp_differences(seq1, seq2, method='simple'):
+    """Count SNP differences between two sequences."""
     if len(seq1) != len(seq2):
         sys.stderr.write("Warning: sequences have different lengths\n")
         return None
     
     differences = 0
     compared_sites = 0
+    skipped_simple = 0
+    skipped_evo = 0
     
     for i in range(len(seq1)):
         base1 = seq1[i].upper()
@@ -175,21 +207,31 @@ def count_snp_differences(seq1, seq2, method='simple'):
         
         # Skip if either is N or gap
         if base1 in ['N', '-'] or base2 in ['N', '-']:
+            if method == 'simple':
+                skipped_simple += 1
             continue
         
         compared_sites += 1
         
         if method == 'simple':
-            # Count as difference if bases are not identical
             if base1 != base2:
                 differences += 1
         elif method == 'evolutionary':
-            # Count minimum evolutionary distance
             dist = count_evolutionary_distance(base1, base2)
-            if dist is not None:
+            if dist is None:
+                skipped_evo += 1
+                compared_sites -= 1  # We thought we'd compare but didn't
+                sys.stderr.write(f"Position {i}: {base1} vs {base2} returned None in evolutionary!\n")
+            else:
                 differences += dist
     
+    #if method == 'simple':
+    #    sys.stderr.write(f"Simple: compared {compared_sites}, skipped {skipped_simple}\n")
+    #else:
+    #    sys.stderr.write(f"Evolutionary: compared {compared_sites}, skipped {skipped_evo} extra positions\n")
+    
     return differences
+
 
 def calculate_distance_matrix(sequences, method='simple'):
     """Calculate pairwise SNP distances for all sequences"""

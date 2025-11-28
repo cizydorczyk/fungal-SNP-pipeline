@@ -102,7 +102,7 @@ class VcfRecord:
 					inequality_pattern = re.compile(r"^<\S+>$")
 					
 					if alt == '.':
-						return 'unknown'
+						return False
 					elif caller == 'PILON' and re.search(inequality_pattern, alt):
 						return 'structural'
 					elif caller == 'GATK' and re.search(inequality_pattern, alt):

@@ -92,6 +92,14 @@ with open(infile, 'r') as vcf_file:
 		else:
 			# output site level information
 			record = vcfTools2.VcfRecord(vcf_line)
+
+			# Skip records with deletion alleles (*)
+			#ref = record.get_ref()
+			#alt_field = record.get_alt_field()
+			
+			#if ref == '*' or '*' in alt_field:
+			#	continue  # Skip this entire record - don't output it
+
 			new_vcf_line = "\t".join([str(record.get_chrom()),
 									 str(record.get_pos()),
 									 str(record.get_id()),
